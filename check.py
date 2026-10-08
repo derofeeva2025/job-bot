@@ -31,7 +31,8 @@ def to_text(raw):
     t = re.sub(r"(?i)<br\s*/?>|</p>|</li>|</h\d>", "\n", raw or "")
     t = re.sub(r"(?i)<li[^>]*>", "• ", t)
     t = re.sub(r"<[^>]+>", "", t)
-    t = html.unescape(t)
+    t = html.unescape(t).replace("\xa0", " ")
+    t = re.sub(r"^\s*(Відгукнутись на вакансію|Відгукнутися на вакансію|Apply)\s*$", "", t, flags=re.M | re.I)
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
 def items(feed_url, tag=""):
@@ -68,7 +69,7 @@ def save_seen(seen):
         json.dump(seen[-MAX_SEEN:], f, indent=0)
 
 SECTIONS = {
-    "req": re.compile(r"^(основні вимоги|вимоги|що потрібно|нам потрібен|ми очікуємо|очікування|job requirements?|requirements?|must[- ]have|required|what we.?re looking for|who we.?re looking for|qualifications|about you|your skills|we need your|what you bring|what we expect)", re.I),
+    "req": re.compile(r"^(основні вимоги|вимоги|що потрібно|нам потрібен|ми очікуємо|очікування|job requirements?|requirements?|must[- ]have|required|what we.?re looking for|who we.?re looking for|qualifications|about you|your skills|we need your|what you bring|what we expect|what kind of professional|кого ми шукаємо|хто нам потрібен)", re.I),
     "nice": re.compile(r"^(буде плюсом|буде перевагою|nice[- ]to[- ]have|would be a plus|will be a plus|bonus)", re.I),
     "resp": re.compile(r"^(основні обов.?язки|обов.?язки|завдання|з чим ти|job responsibilities|key responsibilities|responsibilities|what you.?ll do|your role)", re.I),
 }
@@ -104,11 +105,13 @@ def split_title(title):
                 places.append(p)
     return role, company, places, remote
 
+BULLET = re.compile(r"^(•|—|–|-|\*|·)\s+")
+
 def sections(text):
-    out, cur = {}, None
+    out, cur, intro = {}, None, []
     for line in [l.strip() for l in text.split("\n") if l.strip()]:
-        is_bullet = line.startswith("•")
-        bare = re.sub(r"^[^\w]+", "", line).strip() if not is_bullet else line.lstrip("• ").strip()
+        is_bullet = bool(BULLET.match(line))
+        bare = BULLET.sub("", line) if is_bullet else re.sub(r"^[^\w]+", "", line).strip()
         if not is_bullet and len(line) <= 90 and line.rstrip().endswith((":", "?")):
             key = next((k for k, rx in SECTIONS.items() if rx.match(bare)), None)
             if key and out.get(key):
@@ -117,11 +120,13 @@ def sections(text):
             if key:
                 out[key] = []
             continue
-        if cur and is_bullet:
-            out[cur].append(bare.lstrip("—–- ").strip())
-        elif cur and not out[cur] and len(bare) < 200:
+        if cur:
             out[cur].append(bare)
-    return {k: [i for i in v if i] for k, v in out.items()}
+        elif not out:
+            intro.append(bare)
+    res = {k: [i for i in v if i] for k, v in out.items()}
+    res["intro"] = intro
+    return res
 
 def bullets(items, n, width=150):
     res = []
@@ -162,14 +167,18 @@ def message(v):
     if tech:
         lines.append("🔧 " + html.escape(", ".join(tech[:12])))
 
+    intro = " ".join(sec.get("intro", []))
+    if intro and (sec.get("req") or sec.get("resp")):
+        intro = intro[:260].rsplit(" ", 1)[0] + "…" if len(intro) > 260 else intro
+        lines += ["", html.escape(intro)]
     if sec.get("req"):
-        lines += ["", "<b>Требования:</b>"] + bullets(sec["req"], 7)
+        lines += ["", "<b>Требования:</b>"] + bullets(sec["req"], 8)
     if sec.get("nice"):
-        lines += ["", "<b>Будет плюсом:</b>"] + bullets(sec["nice"], 4)
-    if sec.get("resp") and not sec.get("req"):
+        lines += ["", "<b>Будет плюсом:</b>"] + bullets(sec["nice"], 5)
+    if sec.get("resp"):
         lines += ["", "<b>Задачи:</b>"] + bullets(sec["resp"], 5)
     if not sec.get("req") and not sec.get("resp"):
-        pts = [l.lstrip("• ").strip() for l in text.split("\n") if l.startswith("•")]
+        pts = [BULLET.sub("", l) for l in text.split("\n") if BULLET.match(l)]
         if pts:
             lines += [""] + bullets(pts, 6)
         else:
