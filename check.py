@@ -52,12 +52,110 @@ def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
         json.dump(seen[-MAX_SEEN:], f, indent=0)
 
+SECTIONS = {
+    "req": re.compile(r"^(основні вимоги|вимоги|що потрібно|нам потрібен|ми очікуємо|очікування|job requirements?|requirements?|must[- ]have|required|what we.?re looking for|who we.?re looking for|qualifications|about you|your skills|we need your|what you bring|what we expect)", re.I),
+    "nice": re.compile(r"^(буде плюсом|буде перевагою|nice[- ]to[- ]have|would be a plus|will be a plus|bonus)", re.I),
+    "resp": re.compile(r"^(основні обов.?язки|обов.?язки|завдання|з чим ти|job responsibilities|key responsibilities|responsibilities|what you.?ll do|your role)", re.I),
+}
+TECH = ["Playwright", "Selenium", "Cypress", "Appium", "Postman", "SQL", "REST", "API", "GraphQL", "TypeScript", "JavaScript",
+        "Python", "Java", "C#", "Kotlin", "Swift", "Jira", "TestRail", "Qase", "CI/CD", "Jenkins", "GitHub Actions", "GitLab",
+        "Docker", "Kubernetes", "AWS", "Linux", "Git", "Charles", "Fiddler", "k6", "JMeter", "Pytest", "Cucumber", "Allure"]
+SALARY = re.compile(r"(?:\$|€|USD|EUR)\s?\d[\d\s,.]*\d(?:\s?[-–—]\s?\d[\d\s,.]*\d)?(?:\s?(?:\$|€|USD|EUR))?"
+                    r"|\d[\d\s,.]*\d(?:\s?[-–—]\s?\d[\d\s,.]*\d)?\s?(?:\$|€|USD|EUR)")
+ENGLISH = re.compile(r"(?:англійськ\w*|english)[^\n.;]{0,60}?\b(A1|A2|B1|B2|C1|C2|upper[- ]intermediate|intermediate|advanced|fluent)\b"
+                     r"|\b(A1|A2|B1|B2|C1|C2|upper[- ]intermediate|intermediate|advanced|fluent)\b[^\n.;]{0,30}(?:англійськ|english)", re.I)
+
+def split_title(title):
+    """'Senior QA в Company, Київ, віддалено' -> role, company, places, remote"""
+    m = re.split(r"\s+(?:в|at|@)\s+", title, maxsplit=1)
+    role = m[0].strip()
+    company, places, remote = "", [], False
+    if len(m) > 1:
+        parts = [p.strip() for p in m[1].split(",")]
+        company = parts[0]
+        for p in parts[1:]:
+            low = p.lower()
+            if "віддален" in low or "remote" in low:
+                remote = True
+            elif "за кордон" in low:
+                places.append("за границей")
+            elif "гібрид" in low or "hybrid" in low:
+                places.append("гибрид")
+            elif "офіс" in low or "office" in low:
+                places.append("офис")
+            elif p:
+                places.append(p)
+    return role, company, places, remote
+
+def sections(text):
+    out, cur = {}, None
+    for line in [l.strip() for l in text.split("\n") if l.strip()]:
+        is_bullet = line.startswith("•")
+        bare = re.sub(r"^[^\w]+", "", line).strip() if not is_bullet else line.lstrip("• ").strip()
+        if not is_bullet and len(line) <= 90 and line.rstrip().endswith((":", "?")):
+            key = next((k for k, rx in SECTIONS.items() if rx.match(bare)), None)
+            if key and out.get(key):
+                key = None  # second (e.g. English) copy of an already captured section
+            cur = key
+            if key:
+                out[key] = []
+            continue
+        if cur and is_bullet:
+            out[cur].append(bare.lstrip("—–- ").strip())
+        elif cur and not out[cur] and len(bare) < 200:
+            out[cur].append(bare)
+    return {k: [i for i in v if i] for k, v in out.items()}
+
+def bullets(items, n, width=150):
+    res = []
+    for it in items[:n]:
+        it = it.rstrip(";.,").strip()
+        if len(it) > width:
+            it = it[:width].rsplit(" ", 1)[0] + "…"
+        res.append("• " + html.escape(it))
+    if len(items) > n:
+        res.append(f"<i>…и ещё {len(items) - n}</i>")
+    return res
+
 def message(v):
+    role, company, places, remote = split_title(v["title"])
     text = v["text"]
-    if len(text) > DESC_LIMIT:
-        text = text[:DESC_LIMIT].rsplit(" ", 1)[0] + "…"
-    body = f"<b>{html.escape(v['title'])}</b>\n{html.escape(v['date'])}\n\n{html.escape(text)}"
-    return body[:4000]
+    sec = sections(text)
+    link = html.escape(v["link"], quote=True)
+    lines = [f'<b><a href="{link}">{html.escape(role)}</a></b>']
+    if company:
+        lines.append(f"@ {html.escape(company)}")
+    meta = []
+    if remote:
+        meta.append("🌐 Remote")
+    if places:
+        meta.append("📍 " + html.escape(", ".join(places)))
+    if meta:
+        lines += ["", "  ".join(meta)]
+    sal = SALARY.search(text)
+    if sal:
+        lines.append("💰 " + html.escape(sal.group(0).strip()))
+    eng = ENGLISH.search(text)
+    if eng:
+        lines.append("🇬🇧 Английский: " + html.escape(next(g for g in eng.groups() if g)))
+    tech = [t for t in TECH if re.search(r"(?<![\w])" + re.escape(t) + r"(?![\w])", text, re.I)]
+    if tech:
+        lines.append("🔧 " + html.escape(", ".join(tech[:12])))
+
+    if sec.get("req"):
+        lines += ["", "<b>Требования:</b>"] + bullets(sec["req"], 7)
+    if sec.get("nice"):
+        lines += ["", "<b>Будет плюсом:</b>"] + bullets(sec["nice"], 4)
+    if sec.get("resp") and not sec.get("req"):
+        lines += ["", "<b>Задачи:</b>"] + bullets(sec["resp"], 5)
+    if not sec.get("req") and not sec.get("resp"):
+        pts = [l.lstrip("• ").strip() for l in text.split("\n") if l.startswith("•")]
+        if pts:
+            lines += [""] + bullets(pts, 6)
+        else:
+            short = text[:500].rsplit(" ", 1)[0] + ("…" if len(text) > 500 else "")
+            lines += ["", html.escape(short)]
+    return "\n".join(lines)[:4000]
 
 def post(token, payload):
     req = urllib.request.Request(
