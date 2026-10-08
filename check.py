@@ -8,12 +8,15 @@ import datetime, html, json, os, re, sys, urllib.error, urllib.parse, urllib.req
 from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 
-FEEDS = [
-    "https://jobs.dou.ua/vacancies/feeds/?remote&category=QA",
-    # "https://jobs.dou.ua/vacancies/feeds/?remote&category=Project%20Manager",
-]
+FEEDS = {  # tag -> feed url
+    "QA": "https://jobs.dou.ua/vacancies/feeds/?remote&category=QA",
+    "PM": "https://jobs.dou.ua/vacancies/feeds/?remote&category=Project%20Manager",
+}
+LEGACY_TAGS = ["QA"]  # feeds that were already running before feeds.json existed
 EXCLUDE_TITLE = re.compile(r"\b(junior|trainee|intern|internship|стаж[её]р)\b", re.I)
-SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen.json")
+BASE = os.path.dirname(os.path.abspath(__file__))
+SEEN_FILE = os.path.join(BASE, "seen.json")
+FEEDS_FILE = os.path.join(BASE, "feeds.json")  # feeds whose backlog is already remembered
 MAX_SEEN = 1000
 TZ = ZoneInfo("Europe/Zurich")
 ACTIVE_FROM, ACTIVE_TO = datetime.time(9, 0), datetime.time(21, 30)  # scheduled runs only inside this window
@@ -31,10 +34,11 @@ def to_text(raw):
     t = html.unescape(t)
     return re.sub(r"\n{3,}", "\n\n", t).strip()
 
-def items(feed_url):
+def items(feed_url, tag=""):
     root = ET.fromstring(fetch(feed_url))
     for it in root.iter("item"):
         yield {
+            "tag": tag,
             "title": (it.findtext("title") or "").strip(),
             "link": (it.findtext("link") or "").strip(),
             "date": (it.findtext("pubDate") or "").strip(),
@@ -47,6 +51,17 @@ def load_seen():
             return json.load(f)
     except FileNotFoundError:
         return None
+
+def load_feeds():
+    try:
+        with open(FEEDS_FILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+def save_feeds(tags):
+    with open(FEEDS_FILE, "w") as f:
+        json.dump(sorted(tags), f)
 
 def save_seen(seen):
     with open(SEEN_FILE, "w") as f:
@@ -73,6 +88,8 @@ def split_title(title):
     if len(m) > 1:
         parts = [p.strip() for p in m[1].split(",")]
         company = parts[0]
+        while len(parts) > 1 and re.fullmatch(r"(inc|llc|ltd|gmbh|corp|co|ag|sa|s\.r\.o|ооо)\.?", parts[1], re.I):
+            company += ", " + parts.pop(1)
         for p in parts[1:]:
             low = p.lower()
             if "віддален" in low or "remote" in low:
@@ -122,7 +139,10 @@ def message(v):
     text = v["text"]
     sec = sections(text)
     link = html.escape(v["link"], quote=True)
-    lines = [f'<b><a href="{link}">{html.escape(role)}</a></b>']
+    lines = []
+    if v.get("tag"):
+        lines.append(f"#{html.escape(v['tag'])}")
+    lines.append(f'<b><a href="{link}">{html.escape(role)}</a></b>')
     if company:
         lines.append(f"@ {html.escape(company)}")
     meta = []
@@ -199,22 +219,29 @@ def main():
     if not dry and not (token and chat_id):
         sys.exit("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set")
 
-    vacancies = []
-    for feed in FEEDS:
-        vacancies += list(items(feed))
+    by_tag = {}
+    for tag, url in FEEDS.items():
+        by_tag[tag] = list(items(url, tag))
 
     seen = load_seen()
     first_run = seen is None
     seen = seen or []
-    new = [v for v in vacancies if v["link"] not in seen]
-    # oldest first so the chat reads in order
-    new.reverse()
+    ready = set(load_feeds() or (list(FEEDS) if first_run else LEGACY_TAGS))
+    baseline = [t for t in FEEDS if t not in ready]  # feeds added later: remember backlog silently
+
+    vacancies, dup = [], set()
+    for tag, lst in by_tag.items():
+        for v in lst:
+            if v["link"] not in dup:
+                dup.add(v["link"])
+                vacancies.append(v)
+    new = [v for v in vacancies if v["link"] not in seen and v["tag"] not in baseline]
+    new.reverse()  # oldest first so the chat reads in order
 
     if dry:
-        print(f"{len(vacancies)} in feed, {len(new)} not seen, first_run={first_run}")
+        print(f"{len(vacancies)} in feeds, {len(new)} to send, first_run={first_run}, baseline={baseline}")
         for v in new[-3:]:
-            skipped = bool(EXCLUDE_TITLE.search(v["title"]))
-            print("-", "SKIP" if skipped else "SEND", v["title"], v["link"])
+            print("-", "SKIP" if EXCLUDE_TITLE.search(v["title"]) else "SEND", v["tag"], v["title"])
         if new:
             print("\n--- sample message ---\n" + message(new[-1]))
         return
@@ -222,9 +249,13 @@ def main():
     if first_run:
         # do not flood the chat with the current backlog
         save_seen([v["link"] for v in vacancies])
+        save_feeds(FEEDS)
         print(f"first run: remembered {len(vacancies)} vacancies, nothing sent")
         return
 
+    for v in vacancies:
+        if v["tag"] in baseline and v["link"] not in seen:
+            seen.append(v["link"])
     sent = 0
     for v in new:
         seen.append(v["link"])
@@ -233,7 +264,8 @@ def main():
         send(v, token, chat_id)
         sent += 1
     save_seen(seen)
-    print(f"sent {sent}, new {len(new)}")
+    save_feeds(FEEDS)
+    print(f"sent {sent}, new {len(new)}, baselined feeds: {baseline}")
 
 if __name__ == "__main__":
     main()
