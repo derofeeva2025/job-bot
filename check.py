@@ -4,7 +4,8 @@
 Env: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 Flags: --dry  print instead of sending, do not save state
 """
-import html, json, os, re, sys, urllib.parse, urllib.request
+import datetime, html, json, os, re, sys, urllib.error, urllib.parse, urllib.request
+from zoneinfo import ZoneInfo
 import xml.etree.ElementTree as ET
 
 FEEDS = [
@@ -14,6 +15,8 @@ FEEDS = [
 EXCLUDE_TITLE = re.compile(r"\b(junior|trainee|intern|internship|стаж[её]р)\b", re.I)
 SEEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "seen.json")
 MAX_SEEN = 1000
+TZ = ZoneInfo("Europe/Zurich")
+ACTIVE_FROM, ACTIVE_TO = datetime.time(9, 0), datetime.time(21, 30)  # scheduled runs only inside this window
 DESC_LIMIT = 2500
 
 def fetch(url):
@@ -85,8 +88,15 @@ def send(v, token, chat_id):
         payload["text"] = f"{v['title']}\n\n{v['text'][:DESC_LIMIT]}"[:4000]
         post(token, payload)
 
+def in_active_hours():
+    return ACTIVE_FROM <= datetime.datetime.now(TZ).time() < ACTIVE_TO
+
 def main():
     dry = "--dry" in sys.argv
+    # manual runs (workflow_dispatch / PyCharm) always go through; scheduled ones only in the window
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and not in_active_hours():
+        print("outside 09:00-21:30 Europe/Zurich, skipping")
+        return
     token, chat_id = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
     if not dry and not (token and chat_id):
         sys.exit("TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set")
