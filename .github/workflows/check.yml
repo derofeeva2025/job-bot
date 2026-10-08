@@ -21,5 +21,5 @@ jobs:
         run: |
           git config user.name "job-bot"
           git config user.email "job-bot@users.noreply.github.com"
-          git add seen.json feeds.json
+          git add seen.json feeds.json careers.json
           git diff --cached --quiet || (git commit -m "update seen" && git push)
