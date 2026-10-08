@@ -56,6 +56,16 @@ def message(v):
     body = f"<b>{html.escape(v['title'])}</b>\n{html.escape(v['date'])}\n\n{html.escape(text)}"
     return body[:4000]
 
+def post(token, payload):
+    req = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=30).read()
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Telegram {e.code}: {e.read().decode(errors='replace')}") from None
+
 def send(v, token, chat_id):
     payload = {
         "chat_id": chat_id,
@@ -63,13 +73,17 @@ def send(v, token, chat_id):
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
         "reply_markup": {"inline_keyboard": [[
-            {"text": "Открыть и податься", "url": v["link"] + "#apply"}]]},
+            {"text": "Открыть и податься", "url": v["link"]}]]},
     }
-    req = urllib.request.Request(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=30).read()
+    try:
+        post(token, payload)
+    except RuntimeError as e:
+        if "parse entities" not in str(e):
+            raise
+        # HTML formatting rejected: resend as plain text
+        payload.pop("parse_mode")
+        payload["text"] = f"{v['title']}\n\n{v['text'][:DESC_LIMIT]}"[:4000]
+        post(token, payload)
 
 def main():
     dry = "--dry" in sys.argv
