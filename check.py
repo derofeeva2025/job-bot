@@ -13,6 +13,7 @@ FEEDS = {  # tag -> feed url
     "PM": "https://jobs.dou.ua/vacancies/feeds/?remote&category=Project%20Manager",
 }
 LEGACY_TAGS = ["QA"]  # feeds that were already running before feeds.json existed
+REMOTE_ONLY = True  # send only fully remote vacancies (set False to also get hybrid / office ones)
 EXCLUDE_TITLE = re.compile(r"\b(junior|trainee|intern|internship|entry[- ]level|стаж[её]р)\b", re.I)
 BASE = os.path.dirname(os.path.abspath(__file__))
 SEEN_FILE = os.path.join(BASE, "seen.json")
@@ -60,6 +61,8 @@ def swissdev_items():
             continue
         if j.get("techCategory") != "Tester" and not ROLE_RX.search(title):
             continue
+        if REMOTE_ONLY and str(j.get("workplace", "")).lower() != "remote":
+            continue
         sal = ""
         if j.get("annualSalaryFrom"):
             sal = f"CHF {j['annualSalaryFrom']:,}".replace(",", " ")
@@ -106,6 +109,8 @@ def djinni_items():
         if not (cats & DJINNI_CATS or ROLE_RX.search(title)):
             continue
         text = to_text(it.findtext("description"))
+        if REMOTE_ONLY and not REMOTE_RX.search(text):
+            continue
         yield {
             "tag": "DJ", "title": title, "link": (it.findtext("link") or "").strip(),
             "date": (it.findtext("pubDate") or "").strip(), "text": text,
@@ -240,7 +245,7 @@ def money(lo, hi, cur="$"):
 def arbeitnow_items():
     for j in fetch_json("https://www.arbeitnow.com/api/job-board-api").get("data", []):
         loc = j.get("location") or ""
-        if not wanted(j["title"]) or not (j.get("remote") or SWISS_RX.search(loc + " " + j["title"])):
+        if not wanted(j["title"]) or not (j.get("remote") or (not REMOTE_ONLY and SWISS_RX.search(loc + " " + j["title"]))):
             continue
         yield {"tag": "AN", "title": f"{j['title']} at {j['company_name']}, {loc}" + (", remote" if j.get("remote") else ""),
                "link": j["url"], "date": datetime.datetime.fromtimestamp(j["created_at"], TZ).strftime("%a, %d %b %Y %H:%M"),
