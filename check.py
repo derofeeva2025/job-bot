@@ -321,6 +321,12 @@ SALARY = re.compile(r"(?:\$|€|USD|EUR)\s?\d[\d\s,.]*\d(?:\s?[-–—]\s?\d[\d\
 ENGLISH = re.compile(r"(?:англійськ\w*|english)[^\n.;]{0,60}?\b(A1|A2|B1|B2|C1|C2|upper[- ]intermediate|intermediate|advanced|fluent)\b"
                      r"|\b(A1|A2|B1|B2|C1|C2|upper[- ]intermediate|intermediate|advanced|fluent)\b[^\n.;]{0,30}(?:англійськ|english)", re.I)
 
+CITIES = {"Київ": "Kyiv", "Львів": "Lviv", "Харків": "Kharkiv", "Дніпро": "Dnipro", "Одеса": "Odesa",
+          "Івано-Франківськ": "Ivano-Frankivsk", "Вінниця": "Vinnytsia", "Запоріжжя": "Zaporizhzhia", "Чернівці": "Chernivtsi",
+          "Ужгород": "Uzhhorod", "Тернопіль": "Ternopil", "Житомир": "Zhytomyr", "Полтава": "Poltava", "Миколаїв": "Mykolaiv",
+          "Черкаси": "Cherkasy", "Луцьк": "Lutsk", "Рівне": "Rivne", "Суми": "Sumy", "Хмельницький": "Khmelnytskyi",
+          "Кропивницький": "Kropyvnytskyi", "Чернігів": "Chernihiv", "Україна": "Ukraine"}
+
 def split_title(title):
     """'Senior QA в Company, Київ, віддалено' -> role, company, places, remote"""
     m = re.split(r"\s+(?:в|at|@)\s+", title, maxsplit=1)
@@ -336,13 +342,13 @@ def split_title(title):
             if "віддален" in low or "remote" in low:
                 remote = True
             elif "за кордон" in low:
-                places.append("за границей")
+                places.append("abroad")
             elif "гібрид" in low or "hybrid" in low:
-                places.append("гибрид")
+                places.append("hybrid")
             elif "офіс" in low or "office" in low:
-                places.append("офис")
+                places.append("office")
             elif p:
-                places.append(p)
+                places.append(CITIES.get(p, p))
     return role, company, places, remote
 
 BULLET = re.compile(r"^(•|—|–|-|\*|·)\s+")
@@ -376,7 +382,7 @@ def bullets(items, n, width=150):
             it = it[:width].rsplit(" ", 1)[0] + "…"
         res.append("• " + html.escape(it))
     if len(items) > n:
-        res.append(f"<i>…и ещё {len(items) - n}</i>")
+        res.append(f"<i>…and {len(items) - n} more</i>")
     return res
 
 def message_swissdev(v):
@@ -385,7 +391,7 @@ def message_swissdev(v):
     if v["company"]:
         lines.append(f"@ {html.escape(v['company'])}")
     if v.get("careers"):
-        lines.append(f'💼 <a href="{html.escape(v["careers"], quote=True)}">Вакансии на сайте компании</a>')
+        lines.append(f'💼 <a href="{html.escape(v["careers"], quote=True)}">Company careers page</a>')
     meta = []
     if v["city"]:
         meta.append("📍 " + html.escape(v["city"]))
@@ -397,7 +403,7 @@ def message_swissdev(v):
     if v["level"]:
         lines.append("📊 " + html.escape(str(v["level"])))
     if v["language"]:
-        lines.append("🗣 Язык вакансии: " + html.escape(str(v["language"])))
+        lines.append("🗣 Posting language: " + html.escape(str(v["language"])))
     if v["tech"]:
         lines.append("🔧 " + html.escape(", ".join(map(str, v["tech"][:12]))))
     return "\n".join(lines)[:4000]
@@ -417,7 +423,7 @@ def message(v):
     if company:
         lines.append(f"@ {html.escape(company)}")
     if v.get("careers"):
-        lines.append(f'💼 <a href="{html.escape(v["careers"], quote=True)}">Вакансии на сайте компании</a>')
+        lines.append(f'💼 <a href="{html.escape(v["careers"], quote=True)}">Company careers page</a>')
     meta = []
     if remote:
         meta.append("🌐 Remote")
@@ -430,7 +436,7 @@ def message(v):
         lines.append("💰 " + html.escape(sal.group(0).strip()))
     eng = ENGLISH.search(text)
     if eng:
-        lines.append("🇬🇧 Английский: " + html.escape(next(g for g in eng.groups() if g)))
+        lines.append("🇬🇧 English: " + html.escape(next(g for g in eng.groups() if g)))
     tech = [t for t in TECH if re.search(r"(?<![\w])" + re.escape(t) + r"(?![\w])", text, re.I)]
     if tech:
         lines.append("🔧 " + html.escape(", ".join(tech[:12])))
@@ -440,11 +446,11 @@ def message(v):
         intro = intro[:260].rsplit(" ", 1)[0] + "…" if len(intro) > 260 else intro
         lines += ["", html.escape(intro)]
     if sec.get("req"):
-        lines += ["", "<b>Требования:</b>"] + bullets(sec["req"], 8)
+        lines += ["", "<b>Requirements:</b>"] + bullets(sec["req"], 8)
     if sec.get("nice"):
-        lines += ["", "<b>Будет плюсом:</b>"] + bullets(sec["nice"], 5)
+        lines += ["", "<b>Nice to have:</b>"] + bullets(sec["nice"], 5)
     if sec.get("resp"):
-        lines += ["", "<b>Задачи:</b>"] + bullets(sec["resp"], 5)
+        lines += ["", "<b>Responsibilities:</b>"] + bullets(sec["resp"], 5)
     if not sec.get("req") and not sec.get("resp"):
         pts = [BULLET.sub("", l) for l in text.split("\n") if BULLET.match(l)]
         if pts:
@@ -471,8 +477,8 @@ def send(v, token, chat_id):
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
         "reply_markup": {"inline_keyboard": [[
-            {"text": "Открыть и податься", "url": v["link"]}] + (
-            [{"text": "Сайт компании", "url": v["careers"]}] if v.get("careers") else [])]},
+            {"text": "Open & apply", "url": v["link"]}] + (
+            [{"text": "Company site", "url": v["careers"]}] if v.get("careers") else [])]},
     }
     try:
         post(token, payload)
