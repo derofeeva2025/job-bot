@@ -286,6 +286,77 @@ def workingnomads_items():
         yield {"tag": "WN", "title": f"{j['title']} at {j.get('company_name', '')}, {loc or 'Worldwide'}, remote",
                "link": j["url"], "date": j.get("pub_date", ""), "text": to_text(j.get("description"))}
 
+# Internal source codes (feeds.json, DOU lookups) stay short; the Telegram hashtag shows the site name.
+TAG_LABELS = {
+    "QA": "DOU_QA", "PM": "DOU_PM", "CH": "SwissDevJobs", "WWR": "WeWorkRemotely", "DJ": "Djinni",
+    "AN": "Arbeitnow", "HM": "Himalayas", "ROK": "RemoteOK", "WN": "WorkingNomads",
+    "JB": "Jobicy", "EJ": "EnglishJobs_CH", "JO": "Jobico",
+}
+
+def tag_label(tag):
+    return TAG_LABELS.get(tag, tag)
+
+def jobico_items():
+    """jobico.io official XML feed (Ukrainian IT platform): ~340 vacancies of all kinds, filtered here by title."""
+    root = ET.fromstring(fetch("https://www.jobico.io/api/feeds/jobs.xml"))
+    for it in root.iter("job"):
+        title = (it.findtext("title") or "").strip()
+        if not STRICT_RX.search(title) or NOISE_RX.search(title):
+            continue
+        wp = (it.findtext("locationtype") or "").strip().lower()
+        if REMOTE_ONLY and wp != "remote":
+            continue
+        place = ", ".join(p for p in ((it.findtext("city") or "").strip(), (it.findtext("country") or "").strip()) if p)
+        sal = (it.findtext("salary") or "").strip()
+        yield {"tag": "JO", "title": f"{title} at {(it.findtext('company') or '').strip()}"
+                                      + (f", {place}" if place else "") + (", remote" if wp == "remote" else f", {wp}" if wp else ""),
+               "link": (it.findtext("link") or "").strip(), "date": (it.findtext("date") or "").strip(),
+               "text": (f"Salary: {sal}\n" if sal else "") + to_text(it.findtext("description"))}
+
+def jobicy_items():
+    """Jobicy open API (remote only). Tag search is fuzzy, so wanted() does the real filtering."""
+    seen = set()
+    for q in ("qa engineer", "quality assurance", "tester", "test automation", "project manager", "scrum master"):
+        d = fetch_json("https://jobicy.com/api/v2/remote-jobs?count=50&tag=" + urllib.parse.quote_plus(q))
+        for j in d.get("jobs", []):
+            loc = (j.get("jobGeo") or "").replace("  ", " ").strip()
+            if j["url"] in seen or not wanted(j["jobTitle"], loc):
+                continue
+            if "junior" in str(j.get("jobLevel", "")).lower():
+                continue
+            seen.add(j["url"])
+            pay = money(j.get("salaryMin"), j.get("salaryMax"), "$" if j.get("salaryCurrency") in (None, "", "USD") else str(j["salaryCurrency"]) + " ")
+            yield {"tag": "JB", "title": f"{j['jobTitle']} at {j['companyName']}, {loc or 'Worldwide'}, remote",
+                   "link": j["url"], "date": j.get("pubDate", ""),
+                   "text": (pay + "\n" if pay else "") + to_text(j.get("jobDescription") or j.get("jobExcerpt"))}
+
+EJS_QUERIES = ("qa", "tester", "quality assurance", "test automation", "project manager", "scrum master", "delivery manager")
+EJS_BASE = "https://englishjobsearch.ch"
+
+def englishjobs_items():
+    """englishjobsearch.ch: English-only jobs in Switzerland (all workplaces, not just remote).
+    No per-job page and /clickout/ links are signed per request (and disallowed in robots.txt), so the link is the
+    date-sorted search page + #id; the id is the stable dedupe key."""
+    seen = set()
+    for q in EJS_QUERIES:
+        page = _get(f"{EJS_BASE}/jobs/{urllib.parse.quote(q)}?sort=date&posted=30d", timeout=30)[1]
+        for blk in page.split("<!-- result -->")[1:]:
+            m = re.search(r'<div id="([0-9a-f]{16})" class="job', blk)
+            h3 = re.search(r"<h3[^>]*>(.*?)</h3>", blk, re.S)
+            if not m or not h3 or m.group(1) in seen:
+                continue
+            title = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", h3.group(1)))).strip()
+            lis = [re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", re.sub(r"(?s)<svg.*?</svg>", "", li)))).strip()
+                   for li in re.findall(r"(?s)<li[^>]*>(.*?)</li>", blk)]
+            if not wanted(title):
+                continue
+            seen.add(m.group(1))
+            yield {"tag": "EJ", "kind": "swissdev", "title": title,
+                   "link": f"{EJS_BASE}/jobs/qa?sort=date#{m.group(1)}",
+                   "date": lis[2] if len(lis) > 2 else "", "text": "",
+                   "company": lis[0] if lis else "", "city": lis[1] if len(lis) > 1 else "",
+                   "workplace": "", "salary": "", "language": "English", "level": "", "tech": [], "site": None}
+
 def load_seen():
     try:
         with open(SEEN_FILE) as f:
@@ -387,7 +458,7 @@ def bullets(items, n, width=150):
 
 def message_swissdev(v):
     link = html.escape(v["link"], quote=True)
-    lines = [f"#{v['tag']}", f'<b><a href="{link}">{html.escape(v["title"])}</a></b>']
+    lines = [f"#{tag_label(v['tag'])}", f'<b><a href="{link}">{html.escape(v["title"])}</a></b>']
     if v["company"]:
         lines.append(f"@ {html.escape(v['company'])}")
     if v.get("careers"):
@@ -418,7 +489,7 @@ def message(v):
     link = html.escape(v["link"], quote=True)
     lines = []
     if v.get("tag"):
-        lines.append(f"#{html.escape(v['tag'])}")
+        lines.append(f"#{html.escape(tag_label(v['tag']))}")
     lines.append(f'<b><a href="{link}">{html.escape(role)}</a></b>')
     if company:
         lines.append(f"@ {html.escape(company)}")
@@ -512,6 +583,9 @@ def main():
     sources["HM"] = lambda: list(himalayas_items())
     sources["ROK"] = lambda: list(remoteok_items())
     sources["WN"] = lambda: list(workingnomads_items())
+    sources["JB"] = lambda: list(jobicy_items())
+    sources["EJ"] = lambda: list(englishjobs_items())
+    sources["JO"] = lambda: list(jobico_items())
     for tag, fn in sources.items():
         try:
             by_tag[tag] = fn()
