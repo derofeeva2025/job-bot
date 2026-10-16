@@ -286,11 +286,41 @@ def workingnomads_items():
         yield {"tag": "WN", "title": f"{j['title']} at {j.get('company_name', '')}, {loc or 'Worldwide'}, remote",
                "link": j["url"], "date": j.get("pub_date", ""), "text": to_text(j.get("description"))}
 
+HS_BASE = "https://hubstafftalent.net"
+HS_SKILLS = (721, 478, 103722)  # Hubstaff Talent skill ids (QA / testing); results are OR-matched
+
+def hubstaff_items():
+    """Hubstaff Talent search. The page fills #results via a JS response (no JSON/RSS), so parse the cards from it."""
+    qs = "".join(f"search%5Bskill_ids%5D%5B%5D={s}&" for s in HS_SKILLS) + "search%5Bsort_by%5D=date_added"
+    req = urllib.request.Request(f"{HS_BASE}/search/jobs?{qs}",
+                                 headers={"User-Agent": "Mozilla/5.0 job-bot", "X-Requested-With": "XMLHttpRequest"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        raw = r.read().decode("utf-8", "replace")
+    start = raw.find("$('#results').html(")
+    if start < 0:
+        raise ValueError("Hubstaff response format changed")
+    page, _ = json.JSONDecoder().raw_decode(raw[start + len("$('#results').html("):].replace("\\$", "$"))  # \$ is JS-only
+    for card in page.split('<div class="search-result">')[1:]:
+        a = re.search(r'class="name[^"]*"[^>]*href="(/jobs/[^"]+)"[^>]*>(.*?)</a>', card, re.S)
+        if not a:
+            continue
+        title = to_text(a.group(2))
+        if not wanted(title):  # HQ country is not a work-location limit on Hubstaff, so location is not filtered
+            continue
+        company = re.search(r'job-agency[^>]*>(?:<i[^>]*></i>)?\s*(.*?)</a>', card, re.S)
+        pay = re.search(r'class="pay-rate">([^<]*)<', card)
+        date = re.search(r'title="Created"></i>\s*([^<]*)<', card)
+        bio = re.search(r'class="profil-bio[^"]*">(.*?)</div>', card, re.S)
+        yield {"tag": "HS", "title": f"{title} at {to_text(company.group(1)) if company else '?'}, Worldwide, remote",
+               "link": HS_BASE + a.group(1), "date": re.sub(r"\s+", " ", date.group(1)).strip() if date else "",
+               "text": (f"Salary: {to_text(pay.group(1))}\n" if pay and pay.group(1).strip() else "")
+                       + to_text(bio.group(1) if bio else "")}
+
 # Internal source codes (feeds.json, DOU lookups) stay short; the Telegram hashtag shows the site name.
 TAG_LABELS = {
     "QA": "DOU_QA", "PM": "DOU_PM", "CH": "SwissDevJobs", "WWR": "WeWorkRemotely", "DJ": "Djinni",
     "AN": "Arbeitnow", "HM": "Himalayas", "ROK": "RemoteOK", "WN": "WorkingNomads",
-    "JB": "Jobicy", "EJ": "EnglishJobs_CH", "JO": "Jobico",
+    "JB": "Jobicy", "EJ": "EnglishJobs_CH", "JO": "Jobico", "HS": "HubstaffTalent",
 }
 
 def tag_label(tag):
@@ -586,6 +616,7 @@ def main():
     sources["JB"] = lambda: list(jobicy_items())
     sources["EJ"] = lambda: list(englishjobs_items())
     sources["JO"] = lambda: list(jobico_items())
+    sources["HS"] = lambda: list(hubstaff_items())
     for tag, fn in sources.items():
         try:
             by_tag[tag] = fn()
