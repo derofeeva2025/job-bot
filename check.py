@@ -242,6 +242,31 @@ def money(lo, hi, cur="$"):
         return ""
     return f"Salary: {cur}{lo:,} - {cur}{hi:,}" if hi else f"Salary: {cur}{lo:,}"
 
+LUXOFT_URL = "https://career.luxoft.com/jobs?keyword=&city[]=Remote%20Switzerland&city[]=Remote%20Ukraine&city[]=Zurich&perPage=60"
+
+def luxoft_items():
+    """career.luxoft.com: server-rendered list, each job carries a data-job JSON blob."""
+    page = fetch(LUXOFT_URL.replace("[", "%5B").replace("]", "%5D")).decode("utf-8", "replace")
+    for raw in dict.fromkeys(re.findall(r"data-job='([^']+)'", page)):  # each job is listed twice
+        j = json.loads(html.unescape(raw))
+        city = j.get("city") or ""
+        if not wanted(j["title"]) or (REMOTE_ONLY and not city.lower().startswith("remote")):
+            continue
+        yield {"tag": "LX", "title": f"{j['title']} at Luxoft, {city}" + ("" if REMOTE_ONLY else ", remote" if city.lower().startswith("remote") else ""),
+               "link": "https://career.luxoft.com" + j["url"].replace("\\/", "/"), "date": "", "text": j.get("subtitle") or "",
+               "site": "https://career.luxoft.com/jobs"}
+
+P3B_RX = re.compile(r"\b(qa|sdet|tester\w*|test\w*|quality|qualit[aä]ts\w*|projekt[- ]?manager\w*|projektleit\w*|project manager|scrum master)\b", re.I)
+
+def p3b_items():
+    """p3b.ch (Swiss IT recruiter): static job list; German titles, on-site/hybrid, so REMOTE_ONLY is not applied."""
+    page = fetch("https://www.p3b.ch/jobs").decode("utf-8", "replace")
+    for link, title in re.findall(r'<a class="ns-teaser" href="(https://www\.p3b\.ch/jobs/[^"]+)">.*?<h5[^>]*>(.*?)</h5>', page):
+        title = re.sub(r"\s+", " ", html.unescape(title)).strip()
+        if not P3B_RX.search(title) or NOISE_RX.search(title):
+            continue
+        yield {"tag": "P3B", "title": f"{title} at p3b, Switzerland", "link": link, "date": "", "text": ""}
+
 def arbeitnow_items():
     for j in fetch_json("https://www.arbeitnow.com/api/job-board-api").get("data", []):
         loc = j.get("location") or ""
@@ -321,6 +346,7 @@ TAG_LABELS = {
     "QA": "DOU_QA", "PM": "DOU_PM", "CH": "SwissDevJobs", "WWR": "WeWorkRemotely", "DJ": "Djinni",
     "AN": "Arbeitnow", "HM": "Himalayas", "ROK": "RemoteOK", "WN": "WorkingNomads",
     "JB": "Jobicy", "EJ": "EnglishJobs_CH", "JO": "Jobico", "HS": "HubstaffTalent",
+    "LX": "Luxoft", "P3B": "p3b",
 }
 
 def tag_label(tag):
@@ -617,6 +643,8 @@ def main():
     sources["EJ"] = lambda: list(englishjobs_items())
     sources["JO"] = lambda: list(jobico_items())
     sources["HS"] = lambda: list(hubstaff_items())
+    sources["LX"] = lambda: list(luxoft_items())
+    sources["P3B"] = lambda: list(p3b_items())
     for tag, fn in sources.items():
         try:
             by_tag[tag] = fn()
