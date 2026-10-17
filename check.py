@@ -13,7 +13,8 @@ FEEDS = {  # tag -> feed url
     "PM": "https://jobs.dou.ua/vacancies/feeds/?remote&category=Project%20Manager",
 }
 LEGACY_TAGS = ["QA"]  # feeds that were already running before feeds.json existed
-REMOTE_ONLY = True  # send only fully remote vacancies (set False to also get hybrid / office ones)
+REMOTE_ONLY = True  # Ukraine / worldwide sources: send only fully remote vacancies
+SWISS_ANY = True  # Swiss sources: any work format (office / hybrid / remote)
 EXCLUDE_TITLE = re.compile(r"\b(junior|trainee|intern|internship|entry[- ]level|стаж[её]р)\b", re.I)
 BASE = os.path.dirname(os.path.abspath(__file__))
 SEEN_FILE = os.path.join(BASE, "seen.json")
@@ -61,7 +62,7 @@ def swissdev_items():
             continue
         if j.get("techCategory") != "Tester" and not ROLE_RX.search(title):
             continue
-        if REMOTE_ONLY and str(j.get("workplace", "")).lower() != "remote":
+        if REMOTE_ONLY and not SWISS_ANY and str(j.get("workplace", "")).lower() != "remote":
             continue
         sal = ""
         if j.get("annualSalaryFrom"):
@@ -250,7 +251,7 @@ def luxoft_items():
     for raw in dict.fromkeys(re.findall(r"data-job='([^']+)'", page)):  # each job is listed twice
         j = json.loads(html.unescape(raw))
         city = j.get("city") or ""
-        if not wanted(j["title"]) or (REMOTE_ONLY and not city.lower().startswith("remote")):
+        if not wanted(j["title"]) or (REMOTE_ONLY and not city.lower().startswith("remote") and not (SWISS_ANY and SWISS_RX.search(city))):
             continue
         yield {"tag": "LX", "title": f"{j['title']} at Luxoft, {city}" + ("" if REMOTE_ONLY else ", remote" if city.lower().startswith("remote") else ""),
                "link": "https://career.luxoft.com" + j["url"].replace("\\/", "/"), "date": "", "text": j.get("subtitle") or "",
@@ -270,7 +271,7 @@ def p3b_items():
 def arbeitnow_items():
     for j in fetch_json("https://www.arbeitnow.com/api/job-board-api").get("data", []):
         loc = j.get("location") or ""
-        if not wanted(j["title"]) or not (j.get("remote") or (not REMOTE_ONLY and SWISS_RX.search(loc + " " + j["title"]))):
+        if not wanted(j["title"]) or not (j.get("remote") or (SWISS_ANY and SWISS_RX.search(loc))):
             continue
         yield {"tag": "AN", "title": f"{j['title']} at {j['company_name']}, {loc}" + (", remote" if j.get("remote") else ""),
                "link": j["url"], "date": datetime.datetime.fromtimestamp(j["created_at"], TZ).strftime("%a, %d %b %Y %H:%M"),
@@ -345,8 +346,8 @@ def hubstaff_items():
 TAG_LABELS = {
     "QA": "DOU_QA", "PM": "DOU_PM", "CH": "SwissDevJobs", "WWR": "WeWorkRemotely", "DJ": "Djinni",
     "AN": "Arbeitnow", "HM": "Himalayas", "ROK": "RemoteOK", "WN": "WorkingNomads",
-    "JB": "Jobicy", "EJ": "EnglishJobs_CH", "JO": "Jobico", "HS": "HubstaffTalent",
-    "LX": "Luxoft", "P3B": "p3b",
+    "JB": "Jobicy", "EJ": "EnglishJobs_CH", "JO": "Jobico", "HS": "HubstaffTalent", "JU": "Jobup",
+    "LX": "Luxoft", "P3B": "p3b", "SC": "SwissCompanies",
 }
 
 def tag_label(tag):
@@ -412,6 +413,75 @@ def englishjobs_items():
                    "date": lis[2] if len(lis) > 2 else "", "text": "",
                    "company": lis[0] if lis else "", "city": lis[1] if len(lis) > 1 else "",
                    "workplace": "", "salary": "", "language": "English", "level": "", "tech": [], "site": None}
+
+JOBUP_QUERIES = ("qa engineer", "software tester", "test engineer", "test automation", "project manager", "projektleiter", "scrum master")
+
+def jobup_items():
+    """jobup.ch: public search pages (allowed by robots.txt) carry the results as schema.org JSON-LD.
+    All Swiss workplaces, not just remote; search is fuzzy, so wanted() does the real filtering."""
+    seen = set()
+    for q in JOBUP_QUERIES:
+        page = _get("https://www.jobup.ch/en/jobs/?sort=date&term=" + urllib.parse.quote_plus(q), timeout=30)[1]
+        for m in re.finditer(r'<script type="application/ld\+json">(.*?)</script>', page, re.S):
+            try:
+                data = json.loads(m.group(1))
+            except ValueError:
+                continue
+            for blk in data if isinstance(data, list) else [data]:
+                for el in blk.get("itemListElement", []) if isinstance(blk, dict) else []:
+                    j = el.get("item", {})
+                    if j.get("@type") != "JobPosting" or j["url"] in seen or not wanted(j.get("title", "")):
+                        continue
+                    seen.add(j["url"])
+                    addr = (j.get("jobLocation") or {}).get("address") or {}
+                    yield {"tag": "JU", "kind": "swissdev", "title": j["title"], "link": j["url"],
+                           "date": j.get("datePosted", ""), "text": "",
+                           "company": (j.get("hiringOrganization") or {}).get("name", ""),
+                           "city": addr.get("addressLocality", ""), "workplace": "", "salary": "",
+                           "language": "", "level": "", "tech": [], "site": None}
+
+# --- Swiss companies' own career sites (any work format). Add a company = one line in the dict below. ---
+WORKDAY = {  # label -> (host, tenant, site, public careers url)
+    "Temenos": ("temenos.wd103.myworkdayjobs.com", "temenos", "Temenoscareers", "https://temenos.wd103.myworkdayjobs.com/Temenoscareers"),
+}
+SMARTRECRUITERS = {  # label -> company identifier in api.smartrecruiters.com
+    "SGS": "SGS", "Crealogix": "Crealogix",
+}
+
+def swiss_company_items():
+    """Career sites of Swiss companies via the open Workday / SmartRecruiters job APIs. Any work format;
+    the role filter is wanted(). Locations are kept only when they look Swiss or remote."""
+    for label, (host, tenant, site, public) in WORKDAY.items():
+        try:
+            for q in ("QA", "test", "project manager", "scrum"):
+                body = json.dumps({"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": q}).encode()
+                req = urllib.request.Request(f"https://{host}/wday/cxs/{tenant}/{site}/jobs", data=body,
+                                             headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "Mozilla/5.0 job-bot"})
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    posts = json.loads(r.read()).get("jobPostings", [])
+                for j in posts:
+                    loc = j.get("locationsText") or ""
+                    if not wanted(j["title"]) or not (SWISS_RX.search(loc) or re.search(r"remote|\d+ locations", loc, re.I)):
+                        continue
+                    yield {"tag": "SC", "kind": "swissdev", "title": j["title"], "link": f"https://{host}/en-US/{site}{j['externalPath']}",
+                           "date": j.get("postedOn", ""), "text": "", "company": label, "city": loc, "workplace": "", "salary": "",
+                           "language": "", "level": "", "tech": [], "site": public}
+        except Exception as e:
+            print(f"swiss company {label} failed: {e}")
+    for label, cid in SMARTRECRUITERS.items():
+        try:
+            for q in ("QA", "test", "project manager", "scrum"):
+                d = fetch_json(f"https://api.smartrecruiters.com/v1/companies/{cid}/postings?limit=100&country=ch&q=" + urllib.parse.quote_plus(q))
+                for j in d.get("content", []):
+                    if not wanted(j["name"]):
+                        continue
+                    loc = j.get("location") or {}
+                    yield {"tag": "SC", "kind": "swissdev", "title": j["name"], "link": f"https://jobs.smartrecruiters.com/{cid}/{j['id']}",
+                           "date": j.get("releasedDate", ""), "text": "", "company": label,
+                           "city": ", ".join(x for x in (loc.get("city"), "Switzerland") if x) + (" (remote)" if loc.get("remote") else ""),
+                           "workplace": "", "salary": "", "language": "", "level": "", "tech": [], "site": f"https://careers.smartrecruiters.com/{cid}"}
+        except Exception as e:
+            print(f"swiss company {label} failed: {e}")
 
 def load_seen():
     try:
@@ -603,8 +673,10 @@ def send(v, token, chat_id):
         "text": message(v),
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
+        # "Apply" is a callback button: apply_bot.py (runs on the Mac) answers it with a tailored resume + cover letter
         "reply_markup": {"inline_keyboard": [[
-            {"text": "Open & apply", "url": v["link"]}] + (
+            {"text": "👁 View", "url": v["link"]},
+            {"text": "✍️ Apply", "callback_data": "apply"}] + (
             [{"text": "Company site", "url": v["careers"]}] if v.get("careers") else [])]},
     }
     try:
@@ -643,8 +715,10 @@ def main():
     sources["EJ"] = lambda: list(englishjobs_items())
     sources["JO"] = lambda: list(jobico_items())
     sources["HS"] = lambda: list(hubstaff_items())
+    sources["JU"] = lambda: list(jobup_items())
     sources["LX"] = lambda: list(luxoft_items())
     sources["P3B"] = lambda: list(p3b_items())
+    sources["SC"] = lambda: list(swiss_company_items())
     for tag, fn in sources.items():
         try:
             by_tag[tag] = fn()

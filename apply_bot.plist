@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.jobbot.apply</string>
+  <key>ProgramArguments</key><array><string>/Users/admin/.pyenv/shims/python3</string><string>/Users/admin/Desktop/job-bot/apply_bot.py</string></array>
+  <key>WorkingDirectory</key><string>/Users/admin/Desktop/job-bot</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>/Users/admin/.local/bin:/Users/admin/.pyenv/shims:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/admin/Desktop/job-bot/apply_bot.log</string>
+  <key>StandardErrorPath</key><string>/Users/admin/Desktop/job-bot/apply_bot.log</string>
+</dict></plist>
