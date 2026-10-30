@@ -483,6 +483,45 @@ def swiss_company_items():
         except Exception as e:
             print(f"swiss company {label} failed: {e}")
 
+
+def euremote_items():
+    """EU Remote Jobs: their own sitemap.rss lists the latest 50 listings; details come from each job page (JobPosting JSON-LD)."""
+    rss = fetch("https://euremotejobs.com/sitemap.rss").decode("utf-8", errors="replace")
+    seen = set(load_seen() or [])
+    for it in re.findall(r"<item>(.*?)</item>", rss, re.S):
+        def tag(t):
+            m = re.search(rf"<{t}>(.*?)</{t}>", it, re.S)
+            return html.unescape(re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1))).strip() if m else ""
+        title, link, date = tag("title"), tag("link"), tag("pubDate")
+        if not link or not STRICT_RX.search(title) or NOISE_RX.search(title):
+            continue
+        if link in seen:  # already reported: no need to open the page again
+            yield {"tag": "EU", "title": title, "link": link, "date": date, "text": ""}
+            continue
+        company, loc, text, shown = "", "", "", ""
+        try:
+            page = fetch(link).decode("utf-8", errors="replace")
+            for blk in re.findall(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', page, re.S):
+                try:
+                    d = json.loads(blk)
+                except ValueError:
+                    continue
+                for n in (d.get("@graph", [d]) if isinstance(d, dict) else d):
+                    if isinstance(n, dict) and n.get("@type") == "JobPosting":
+                        company = (n.get("hiringOrganization") or {}).get("name", "")
+                        reqs = n.get("applicantLocationRequirements") or []
+                        reqs = reqs if isinstance(reqs, list) else [reqs]
+                        names = [r.get("name", "") for r in reqs if isinstance(r, dict) and r.get("name")]
+                        loc = ", ".join(names)
+                        if len(names) > 6 and "Switzerland" in names:
+                            shown = "Europe-wide (incl. Switzerland)"  # a list of 50 countries is unreadable
+                        text = to_text(n.get("description"))
+        except Exception as e:
+            print(f"euremotejobs page failed {link}: {e}")
+        if not wanted(title, loc):
+            continue
+        yield {"tag": "EU", "title": f"{title} at {company}, {shown or loc or 'Europe'}, remote", "link": link, "date": date, "text": text}
+
 def load_seen():
     try:
         with open(SEEN_FILE) as f:
@@ -711,6 +750,7 @@ def main():
     sources["HM"] = lambda: list(himalayas_items())
     sources["ROK"] = lambda: list(remoteok_items())
     sources["WN"] = lambda: list(workingnomads_items())
+    sources["EU"] = lambda: list(euremote_items())
     sources["JB"] = lambda: list(jobicy_items())
     sources["EJ"] = lambda: list(englishjobs_items())
     sources["JO"] = lambda: list(jobico_items())
